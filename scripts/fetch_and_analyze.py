@@ -28,26 +28,25 @@ def classify(title, text):
         return "国家大事"
     return "社会评论"
 
-def get_page(url, encoding="utf-8"):
-    """抓取页面，强制指定编码"""
+def get_page_text(url, encoding="utf-8"):
+    """返回原始 response 和 BeautifulSoup"""
     r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+    # 强制编码，不让 requests 自动猜
     r.encoding = encoding
-    return BeautifulSoup(r.text, "html.parser")
+    return r, BeautifulSoup(r.text, "html.parser")
 
-def extract_title(soup):
-    """从页面提取干净标题"""
-    # 优先取 h1
+def extract_title(soup, encoding="utf-8"):
+    """从详情页提取标题，gbk 页面从 bytes 重新解码"""
     for sel in ["h1.title", "h1", ".title", "#title"]:
         el = soup.select_one(sel)
         if el:
             t = el.get_text(strip=True)
-            if 4 < len(t) < 60:
+            if 4 < len(t) < 80:
                 return t
-    # 退而取 <title> 标签，去掉网站名后缀
-    t = soup.select_one("title")
-    if t:
-        raw = t.get_text(strip=True)
-        for sep in ["_", "—", "-", "|"]:
+    t_tag = soup.select_one("title")
+    if t_tag:
+        raw = t_tag.get_text(strip=True)
+        for sep in ["_", "—", "－", "-", "|", "｜"]:
             if sep in raw:
                 raw = raw.split(sep)[0].strip()
         if 4 < len(raw) < 80:
@@ -55,9 +54,8 @@ def extract_title(soup):
     return ""
 
 def extract_body(soup):
-    """提取正文"""
-    for sel in [".rm_txt_con", "#rwb_zw", ".article_box", ".article",
-                ".content", ".TRS_Editor", "article"]:
+    for sel in [".rm_txt_con", "#rwb_zw", ".article_box",
+                ".article", ".content", ".TRS_Editor", "article"]:
         el = soup.select_one(sel)
         if el:
             text = el.get_text(separator="\n", strip=True)
@@ -68,38 +66,35 @@ def extract_body(soup):
 def fetch_rmrb():
     articles = []
     sources = [
-        # 评论：用更新的 URL 格式
         ("https://opinion.people.com.cn/", "gbk", "人民日报·评论"),
-        ("https://culture.people.com.cn/", "gbk", "人民日报·文化"),
+        ("https://culture.people.com.cn/",  "gbk", "人民日报·文化"),
     ]
     for index_url, enc, source in sources:
         try:
-            soup = get_page(index_url, enc)
-            base = index_url.rstrip("/")
+            _, soup = get_page_text(index_url, enc)
+            domain = "https://" + index_url.split("/")[2]
 
-            # 收集所有文章链接
             candidates = []
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                text = a.get_text(strip=True)
-                # 人民网文章 URL 特征：含 /n1/ 或 /n/ 且是 .html
-                if len(text) > 5 and (".html" in href):
-                    if href.startswith("http") and "people.com.cn" in href:
-                        candidates.append((text, href))
-                    elif href.startswith("/n"):
-                        candidates.append((text, "https://" + index_url.split("/")[2] + href))
+                if ".html" not in href:
+                    continue
+                if href.startswith("http") and "people.com.cn" in href:
+                    candidates.append(href)
+                elif href.startswith("/n"):
+                    candidates.append(domain + href)
 
             seen = set()
             count = 0
-            for _, link in candidates:
-                if count >= 6:
+            for link in candidates:
+                if count >= 5:
                     break
                 if link in seen:
                     continue
                 seen.add(link)
                 try:
-                    detail = get_page(link, enc)
-                    title = extract_title(detail)
+                    _, detail = get_page_text(link, enc)
+                    title = extract_title(detail, enc)
                     body  = extract_body(detail)
                     if not title or len(body) < 100:
                         continue
@@ -114,17 +109,17 @@ def fetch_rmrb():
                     count += 1
                     time.sleep(1)
                 except Exception as e:
-                    print(f"    [跳过文章] {e}")
-            print(f"  {source}: 获取 {count} 篇")
+                    print(f"    [skip] {e}")
+            print(f"  {source}: {count} pcs")
         except Exception as e:
-            print(f"  [WARN] {source} 首页失败: {e}")
+            print(f"  [WARN] {source}: {e}")
     return articles
 
 def fetch_sxzg():
     articles = []
     url = "http://sxdygbjy.gov.cn/bgz/index.html"
     try:
-        soup = get_page(url, "utf-8")
+        _, soup = get_page_text(url, "utf-8")
         candidates = []
         for a in soup.find_all("a", href=True):
             href = a["href"]
@@ -132,22 +127,22 @@ def fetch_sxzg():
             if len(text) < 5 or ".html" not in href:
                 continue
             if href.startswith("http"):
-                candidates.append((text, href))
+                candidates.append(href)
             elif href.startswith("/"):
-                candidates.append((text, "http://sxdygbjy.gov.cn" + href))
+                candidates.append("http://sxdygbjy.gov.cn" + href)
             elif not href.startswith("#"):
-                candidates.append((text, "http://sxdygbjy.gov.cn/bgz/" + href))
+                candidates.append("http://sxdygbjy.gov.cn/bgz/" + href)
 
         seen = set()
         count = 0
-        for _, link in candidates:
+        for link in candidates:
             if count >= 5:
                 break
             if link in seen:
                 continue
             seen.add(link)
             try:
-                detail = get_page(link, "utf-8")
+                _, detail = get_page_text(link, "utf-8")
                 title = extract_title(detail)
                 body  = extract_body(detail)
                 if not title or len(body) < 80:
@@ -163,15 +158,14 @@ def fetch_sxzg():
                 count += 1
                 time.sleep(1)
             except Exception as e:
-                print(f"    [跳过文章] {e}")
-        print(f"  山西组工网: 获取 {count} 篇")
+                print(f"    [skip] {e}")
+        print(f"  sxzg: {count} pcs")
     except Exception as e:
-        print(f"  [WARN] 山西组工网失败: {e}")
+        print(f"  [WARN] sxzg: {e}")
     return articles
 
 def analyze(article):
     if not GEMINI_API_KEY:
-        print("  [WARN] GEMINI_API_KEY 未设置")
         return None
     prompt = f"""你是申论/公文写作备考辅导老师。请分析以下文章，严格只输出JSON，不要任何多余内容，不要markdown代码块。
 
@@ -190,24 +184,31 @@ def analyze(article):
   "why": "从申论/公文写作角度说明摘抄价值，可用于哪类题型场景（100字左右）"
 }}"""
 
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
-    try:
-        r = requests.post(url, json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
-        }, timeout=60, verify=False)
-        r.raise_for_status()
-        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-        clean = text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean)
-    except Exception as e:
-        print(f"  [WARN] Gemini失败: {e}")
-        return None
+    api_url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
+    for attempt in range(3):
+        try:
+            r = requests.post(api_url, json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
+            }, timeout=60, verify=False)
+            if r.status_code == 429:
+                wait = 30 * (attempt + 1)
+                print(f"    rate limit, wait {wait}s...")
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            clean = text.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean)
+        except Exception as e:
+            print(f"    [attempt {attempt+1}] {e}")
+            time.sleep(10)
+    return None
 
 def main():
     os.makedirs("data", exist_ok=True)
-    print(f"GEMINI_API_KEY 已设置: {'是' if GEMINI_API_KEY else '否'}")
+    print(f"GEMINI_API_KEY set: {'YES' if GEMINI_API_KEY else 'NO'}")
 
     existing = []
     if os.path.exists(DATA_FILE):
@@ -218,16 +219,16 @@ def main():
                 existing = []
     existing_urls = {a["url"] for a in existing}
 
-    print("\n正在抓取人民日报...")
+    print("Fetching renminribao...")
     rmrb = fetch_rmrb()
-    print("\n正在抓取山西组工网...")
+    print("Fetching sxzg...")
     sxzg = fetch_sxzg()
 
     new_articles = [a for a in rmrb + sxzg if a["url"] not in existing_urls]
-    print(f"\n新文章 {len(new_articles)} 篇，开始AI分析...")
+    print(f"New: {len(new_articles)}, analyzing...")
 
     for i, article in enumerate(new_articles):
-        print(f"  [{i+1}/{len(new_articles)}] {article['title'][:30]}")
+        print(f"  [{i+1}/{len(new_articles)}] analyzing...")
         result = analyze(article)
         if result:
             article["keywords"] = result.get("keywords", [])
@@ -241,7 +242,8 @@ def main():
             article["keywords"] = []
             article["excerpt"]  = article["content"][:60] + "..."
             article["analysis"] = {"para": "", "skills": [], "why": ""}
-        time.sleep(2)
+        # 每篇分析后等待6秒，避免触发限流
+        time.sleep(6)
 
     all_articles = new_articles + existing
     cutoff = (datetime.date.today() - datetime.timedelta(days=60)).isoformat()
@@ -250,7 +252,7 @@ def main():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(all_articles, f, ensure_ascii=False, indent=2)
 
-    print(f"\n完成！共保存 {len(all_articles)} 篇文章。")
+    print(f"Done! saved {len(all_articles)} articles.")
 
 if __name__ == "__main__":
     main()

@@ -11,14 +11,16 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATA_FILE = "data/articles.json"
 TODAY = datetime.date.today()
-DATE_STR = TODAY.isoformat()                        # 2026-06-02
-DATE_PATH = TODAY.strftime("%Y%m/%d")               # 202606/02
+DATE_STR  = TODAY.isoformat()            # 2026-06-02
+DATE_PATH = TODAY.strftime("%Y%m/%d")    # 202606/02
 
-# 人民日报电子版：评论=05版，文化=11版
+# 评论=05版，文化=11版
 RMRB_NODES = [
     ("https://paper.people.com.cn/rmrb/pc/layout/{date}/node_05.html", "人民日报·评论"),
     ("https://paper.people.com.cn/rmrb/pc/layout/{date}/node_11.html", "人民日报·文化"),
 ]
+
+SKIP_TITLES = {"图片报道", "纵横", "责编", "版面"}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
@@ -41,71 +43,95 @@ def get_soup(url):
     r.encoding = "utf-8"
     return BeautifulSoup(r.text, "html.parser")
 
+def parse_article(url, source):
+    """
+    paper.people.com.cn 文章页结构：
+    - 标题在 <title> 标签，格式：'文章标题'（无需截断）
+    - 正文段落直接在 <body> 里，是 <p> 标签，夹在导航和版权声明之间
+    """
+    soup = get_soup(url)
+
+    # 1. 取标题：直接用 <title>，去掉末尾可能有的网站名
+    title = ""
+    t_tag = soup.find("title")
+    if t_tag:
+        raw = t_tag.get_text(strip=True)
+        # 有时格式是 "文章标题_人民网" 或 "文章标题-人民网"
+        for sep in [" - 人民网", "_人民网", "－人民网"]:
+            if sep in raw:
+                raw = raw.split(sep)[0].strip()
+        title = raw
+
+    if not title or len(title) < 3:
+        return None
+
+    # 过滤噪音条目
+    if any(w in title for w in SKIP_TITLES):
+        return None
+
+    # 2. 取正文：找页面中所有 <p> 段落，过滤掉导航/版权等噪音
+    paragraphs = []
+    for p in soup.find_all("p"):
+        text = p.get_text(strip=True)
+        # 过滤短段、版权声明、日期行
+        if len(text) < 20:
+            continue
+        if any(w in text for w in ["版权所有", "Copyright", "人民网", "责任编辑", "《人民日报》（"]):
+            continue
+        paragraphs.append(text)
+
+    body = "\n".join(paragraphs)
+
+    # 如果 <p> 没提取到，fallback：取 # 标题后面的 markdown 正文
+    if len(body) < 80:
+        full_text = soup.get_text(separator="\n", strip=True)
+        lines = [l.strip() for l in full_text.split("\n") if len(l.strip()) > 20]
+        # 跳过导航部分，找到正文开始
+        start = 0
+        for i, line in enumerate(lines):
+            if title[:8] in line or "第0" in line:
+                start = i + 1
+                break
+        body = "\n".join(lines[start:start+30])
+
+    if len(body) < 80:
+        return None
+
+    return {
+        "title":   title,
+        "source":  source,
+        "url":     url,
+        "content": body[:2000],
+        "date":    DATE_STR,
+        "cat":     classify(title, body),
+    }
+
 def fetch_rmrb():
     articles = []
     for node_tpl, source in RMRB_NODES:
         url = node_tpl.format(date=DATE_PATH)
         try:
             soup = get_soup(url)
-            # 找所有 content_ 开头的文章链接
+            # 从版面页提取所有 content_ 文章链接
             links = []
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if "content_" in href and href.endswith(".html"):
-                    if href.startswith("http"):
-                        links.append(href)
-                    else:
-                        links.append("https://paper.people.com.cn" + href)
+                    full = href if href.startswith("http") else "https://paper.people.com.cn" + href
+                    if full not in links:
+                        links.append(full)
 
-            links = list(dict.fromkeys(links))  # 去重保序
             print(f"  {source}: found {len(links)} links")
-
             count = 0
             for link in links:
                 if count >= 6:
                     break
                 try:
-                    detail = get_soup(link)
-                    # 标题
-                    title = ""
-                    for sel in ["h1", ".title", "#title"]:
-                        el = detail.select_one(sel)
-                        if el:
-                            t = el.get_text(strip=True)
-                            if 4 < len(t) < 100:
-                                title = t
-                                break
-                    if not title:
-                        t_tag = detail.select_one("title")
-                        if t_tag:
-                            title = t_tag.get_text(strip=True).split("_")[0].strip()
-
-                    # 正文
-                    body = ""
-                    for sel in [".rm_txt_con", "#rwb_zw", ".article", ".text"]:
-                        el = detail.select_one(sel)
-                        if el:
-                            body = el.get_text(separator="\n", strip=True)
-                            if len(body) > 100:
-                                break
-
-                    if not title or len(body) < 80:
-                        continue
-
-                    # 过滤掉图片报道、责编等纯噪音条目
-                    skip_words = ["图片报道", "责编", "版面", "本版"]
-                    if any(w in title for w in skip_words):
-                        continue
-
-                    articles.append({
-                        "title":   title,
-                        "source":  source,
-                        "url":     link,
-                        "content": body[:2000],
-                        "date":    DATE_STR,
-                        "cat":     classify(title, body),
-                    })
-                    count += 1
+                    article = parse_article(link, source)
+                    if article:
+                        articles.append(article)
+                        count += 1
+                        print(f"    + {article['title'][:40]}")
                     time.sleep(1)
                 except Exception as e:
                     print(f"    [skip] {e}")
@@ -119,22 +145,22 @@ def fetch_sxzg():
     url = "http://sxdygbjy.gov.cn/bgz/index.html"
     try:
         soup = get_soup(url)
-        candidates = []
+        links = []
         for a in soup.find_all("a", href=True):
             href = a["href"]
             text = a.get_text(strip=True)
             if len(text) < 5 or ".html" not in href:
                 continue
             if href.startswith("http"):
-                candidates.append(href)
+                links.append(href)
             elif href.startswith("/"):
-                candidates.append("http://sxdygbjy.gov.cn" + href)
+                links.append("http://sxdygbjy.gov.cn" + href)
             elif not href.startswith("#"):
-                candidates.append("http://sxdygbjy.gov.cn/bgz/" + href)
+                links.append("http://sxdygbjy.gov.cn/bgz/" + href)
 
         seen = set()
         count = 0
-        for link in candidates:
+        for link in links:
             if count >= 5:
                 break
             if link in seen:
@@ -142,14 +168,16 @@ def fetch_sxzg():
             seen.add(link)
             try:
                 detail = get_soup(link)
+                # 标题
                 title = ""
-                for sel in ["h1", ".title", "#title"]:
-                    el = detail.select_one(sel)
-                    if el:
-                        t = el.get_text(strip=True)
-                        if 4 < len(t) < 100:
-                            title = t
-                            break
+                t_tag = detail.find("title")
+                if t_tag:
+                    title = t_tag.get_text(strip=True).split("_")[0].strip()
+                if not title:
+                    h1 = detail.find("h1")
+                    if h1:
+                        title = h1.get_text(strip=True)
+                # 正文
                 body = ""
                 for sel in [".article-content", ".TRS_Editor", ".content", "article"]:
                     el = detail.select_one(sel)
@@ -168,6 +196,7 @@ def fetch_sxzg():
                     "cat":     "党政文章",
                 })
                 count += 1
+                print(f"    + {title[:40]}")
                 time.sleep(1)
             except Exception as e:
                 print(f"    [skip] {e}")
@@ -232,7 +261,7 @@ def main():
                 existing = []
     existing_urls = {a["url"] for a in existing}
 
-    print("--- Fetching people.com.cn (paper) ---")
+    print("--- Fetching people.com.cn (paper edition) ---")
     rmrb = fetch_rmrb()
     print("--- Fetching sxzg ---")
     sxzg = fetch_sxzg()
@@ -241,7 +270,7 @@ def main():
     print(f"--- New: {len(new_articles)}, analyzing... ---")
 
     for i, article in enumerate(new_articles):
-        print(f"  [{i+1}/{len(new_articles)}] {article['title'][:30]}")
+        print(f"  [{i+1}/{len(new_articles)}] analyzing: {article['title'][:30]}")
         result = analyze(article)
         if result:
             article["keywords"] = result.get("keywords", [])
@@ -251,12 +280,12 @@ def main():
                 "skills": result.get("skills", []),
                 "why":    result.get("why", ""),
             }
-            print(f"  [{i+1}] OK - {article['title'][:20]}")
+            print(f"  [{i+1}] OK")
         else:
             article["keywords"] = []
             article["excerpt"]  = article["content"][:60] + "..."
             article["analysis"] = {"para": "", "skills": [], "why": ""}
-            print(f"  [{i+1}] analysis failed")
+            print(f"  [{i+1}] analysis skipped")
         time.sleep(5)
 
     all_articles = new_articles + existing

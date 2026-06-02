@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>每日摘读</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+  :root {
+    --red: #D85A30;
+    --red-dark: #993C1D;
+    --red-light: #FAECE7;
+    --red-border: #F0997B;
+    --blue-light: #E6F1FB;
+    --blue-border: #85B7EB;
+    --blue-text: #0C447C;
+    --bg: #F5F4F1;
+    --bg-card: #FFFFFF;
+    --bg-secondary: #F0EFEC;
+    --border: #E2E0DB;
+    --text: #1A1916;
+    --text-2: #5C5A55;
+    --text-3: #9C9A95;
+    --radius: 12px;
+    --radius-sm: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+
+  /* ── 顶栏 ── */
+  .topbar {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px;
+  }
+  .logo { font-size: 17px; font-weight: 600; color: var(--text); }
+  .logo em { font-style: normal; color: var(--red); }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .date-select {
+    font-size: 13px; padding: 5px 10px;
+    border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg-secondary); color: var(--text); cursor: pointer;
+  }
+  .refresh-btn {
+    font-size: 13px; padding: 5px 12px;
+    border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg-secondary); color: var(--text-2); cursor: pointer;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .refresh-btn:hover { background: var(--red-light); color: var(--red); border-color: var(--red-border); }
+
+  /* ── 标签栏 ── */
+  .tabs {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    display: flex; gap: 0; padding: 0 20px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    padding: 10px 16px; font-size: 13px; color: var(--text-2);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    white-space: nowrap; flex-shrink: 0; transition: color .15s;
+  }
+  .tab.active { color: var(--red); border-bottom-color: var(--red); font-weight: 500; }
+  .tab:hover:not(.active) { color: var(--text); }
+
+  /* ── 主区域 ── */
+  .main { max-width: 820px; margin: 0 auto; padding: 20px 16px; }
+
+  /* ── 统计栏 ── */
+  .stats-row { display: flex; gap: 10px; margin-bottom: 20px; }
+  .stat-item {
+    flex: 1; background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 12px; text-align: center;
+  }
+  .stat-num { font-size: 20px; font-weight: 600; color: var(--red); }
+  .stat-lbl { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+  /* ── 文章卡片 ── */
+  .article-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; margin-bottom: 12px;
+    transition: box-shadow .2s;
+  }
+  .article-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+  .card-top { padding: 16px; }
+  .card-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+  .tag {
+    font-size: 11px; font-weight: 500; padding: 2px 8px;
+    border-radius: 20px; border: 1px solid;
+  }
+  .tag-rmrb { background: var(--red-light); color: var(--red-dark); border-color: var(--red-border); }
+  .tag-sxzg { background: var(--blue-light); color: var(--blue-text); border-color: var(--blue-border); }
+  .tag-cat {
+    background: var(--bg-secondary); color: var(--text-2);
+    border-color: var(--border); font-weight: 400;
+  }
+  .card-date { font-size: 11px; color: var(--text-3); margin-left: auto; }
+  .card-title { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.45; margin-bottom: 7px; }
+  .card-excerpt { font-size: 13px; color: var(--text-2); line-height: 1.7; margin-bottom: 10px; }
+  .kw-row { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px; }
+  .kw {
+    font-size: 11px; padding: 2px 8px; border-radius: 20px;
+    background: var(--red-light); color: var(--red-dark); border: 1px solid var(--red-border);
+  }
+  .card-link { font-size: 12px; color: var(--text-3); text-decoration: none; }
+  .card-link:hover { color: var(--red); }
+
+  /* ── 分析面板切换按钮 ── */
+  .ana-toggle {
+    display: flex; gap: 0;
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+  }
+  .ana-btn {
+    flex: 1; font-size: 12px; padding: 9px 4px;
+    border: none; border-right: 1px solid var(--border);
+    background: transparent; color: var(--text-2); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+    transition: background .15s, color .15s;
+  }
+  .ana-btn:last-child { border-right: none; }
+  .ana-btn.active { background: var(--red-light); color: var(--red-dark); font-weight: 500; }
+  .ana-btn:hover:not(.active) { background: var(--border); }
+
+  /* ── 分析内容区 ── */
+  .ana-body { padding: 16px; border-top: 1px solid var(--border); }
+  .ana-label {
+    font-size: 11px; font-weight: 600; color: var(--text-3);
+    letter-spacing: .07em; text-transform: uppercase;
+    margin-bottom: 8px; display: flex; align-items: center; gap: 5px;
+  }
+  .ana-text { font-size: 13px; color: var(--text); line-height: 1.8; }
+  .skill-item {
+    font-size: 13px; color: var(--text-2); line-height: 1.7;
+    padding: 8px 12px; margin-bottom: 6px;
+    border-left: 3px solid var(--red); background: var(--red-light);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+
+  /* ── 空态 / 加载 ── */
+  .empty { text-align: center; padding: 60px 20px; color: var(--text-3); }
+  .empty i { font-size: 36px; display: block; margin-bottom: 12px; opacity: .3; }
+  .empty p { font-size: 14px; }
+  .loading-bar {
+    text-align: center; padding: 40px; color: var(--text-2); font-size: 14px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .spinner {
+    width: 20px; height: 20px; border: 2px solid var(--border);
+    border-top-color: var(--red); border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── 响应式 ── */
+  @media(max-width: 500px) {
+    .stats-row { gap: 6px; }
+    .stat-num { font-size: 16px; }
+    .card-title { font-size: 14px; }
+    .ana-btn span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">每日<em>摘</em>读</div>
+  <div class="topbar-right">
+    <select class="date-select" id="dateSelect" onchange="onDateChange()"></select>
+    <button class="refresh-btn" onclick="loadData()">
+      <i class="fa-solid fa-rotate-right"></i> 刷新
+    </button>
+  </div>
+</div>
+
+<div class="tabs" id="tabsBar">
+  <div class="tab active" data-cat="全部" onclick="switchTab(this)">全部</div>
+  <div class="tab" data-cat="民生新闻" onclick="switchTab(this)">民生新闻</div>
+  <div class="tab" data-cat="国家大事" onclick="switchTab(this)">国家大事</div>
+  <div class="tab" data-cat="社会评论" onclick="switchTab(this)">社会评论</div>
+  <div class="tab" data-cat="文化" onclick="switchTab(this)">文化</div>
+  <div class="tab" data-cat="党政文章" onclick="switchTab(this)">党政文章</div>
+</div>
+
+<div class="main">
+  <div class="stats-row" id="statsRow" style="display:none">
+    <div class="stat-item"><div class="stat-num" id="statTotal">0</div><div class="stat-lbl">今日文章</div></div>
+    <div class="stat-item"><div class="stat-num" id="statRmrb">0</div><div class="stat-lbl">人民日报</div></div>
+    <div class="stat-item"><div class="stat-num" id="statSxzg">0</div><div class="stat-lbl">山西组工</div></div>
+    <div class="stat-item"><div class="stat-num" id="statKw">0</div><div class="stat-lbl">关键词</div></div>
+  </div>
+  <div id="cardsGrid"></div>
+</div>
+
+<script>
+let allArticles = [];
+let currentTab = '全部';
+let currentDate = '';
+const TODAY = new Date().toISOString().slice(0, 10);
+
+// ── 加载数据 ──────────────────────────────────────────────
+async function loadData() {
+  document.getElementById('cardsGrid').innerHTML =
+    '<div class="loading-bar"><div class="spinner"></div>加载中...</div>';
+  try {
+    const res = await fetch('data/articles.json?t=' + Date.now());
+    allArticles = await res.json();
+    buildDateSelect();
+    renderAll();
+  } catch (e) {
+    document.getElementById('cardsGrid').innerHTML =
+      '<div class="empty"><i class="fa-regular fa-newspaper"></i><p>数据加载失败，请稍后刷新重试</p></div>';
+  }
+}
+
+// ── 日期选择器 ────────────────────────────────────────────
+function buildDateSelect() {
+  const dates = [...new Set(allArticles.map(a => a.date))].sort().reverse();
+  const sel = document.getElementById('dateSelect');
+  sel.innerHTML = '';
+  dates.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.text = d === TODAY ? `今天 ${d}` : d;
+    sel.appendChild(opt);
+  });
+  currentDate = dates[0] || TODAY;
+  sel.value = currentDate;
+}
+
+function onDateChange() {
+  currentDate = document.getElementById('dateSelect').value;
+  renderAll();
+}
+
+// ── 标签切换 ──────────────────────────────────────────────
+function switchTab(el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  currentTab = el.dataset.cat;
+  renderAll();
+}
+
+// ── 渲染统计 ──────────────────────────────────────────────
+function updateStats(list) {
+  const statsRow = document.getElementById('statsRow');
+  if (!list.length) { statsRow.style.display = 'none'; return; }
+  statsRow.style.display = 'flex';
+  document.getElementById('statTotal').textContent = list.length;
+  document.getElementById('statRmrb').textContent = list.filter(a => a.source.includes('人民')).length;
+  document.getElementById('statSxzg').textContent = list.filter(a => a.source.includes('山西')).length;
+  const kwSet = new Set(list.flatMap(a => a.keywords || []));
+  document.getElementById('statKw').textContent = kwSet.size;
+}
+
+// ── 渲染全部 ──────────────────────────────────────────────
+function renderAll() {
+  const list = allArticles.filter(a => {
+    const catOk = currentTab === '全部' || a.cat === currentTab;
+    const dateOk = a.date === currentDate;
+    return catOk && dateOk;
+  });
+  updateStats(allArticles.filter(a => a.date === currentDate));
+  const grid = document.getElementById('cardsGrid');
+  if (!list.length) {
+    grid.innerHTML = '<div class="empty"><i class="fa-regular fa-newspaper"></i><p>暂无文章，GitHub Actions 将在每天早上9点自动更新</p></div>';
+    return;
+  }
+  grid.innerHTML = list.map((a, i) => cardHTML(a, i)).join('');
+}
+
+// ── 卡片 HTML ─────────────────────────────────────────────
+function cardHTML(a, i) {
+  const srcCls = a.source.includes('山西') ? 'tag-sxzg' : 'tag-rmrb';
+  const kwHtml = (a.keywords || []).map(k => `<span class="kw">${k}</span>`).join('');
+  return `
+  <div class="article-card" id="ac-${i}">
+    <div class="card-top">
+      <div class="card-meta">
+        <span class="tag ${srcCls}">${a.source}</span>
+        <span class="tag tag-cat">${a.cat}</span>
+        <span class="card-date">${a.date}</span>
+      </div>
+      <div class="card-title">${a.title}</div>
+      <div class="card-excerpt">${a.excerpt || ''}</div>
+      <div class="kw-row">${kwHtml}</div>
+      ${a.url ? `<a class="card-link" href="${a.url}" target="_blank"><i class="fa-solid fa-arrow-up-right-from-square" style="font-size:10px"></i> 查看原文</a>` : ''}
+    </div>
+    <div class="ana-toggle">
+      <button class="ana-btn" data-tab="para" onclick="toggleAna(${i},'para')">
+        <i class="fa-solid fa-layer-group"></i><span>段落分析</span>
+      </button>
+      <button class="ana-btn" data-tab="skill" onclick="toggleAna(${i},'skill')">
+        <i class="fa-solid fa-pen-nib"></i><span>写作技巧</span>
+      </button>
+      <button class="ana-btn" data-tab="why" onclick="toggleAna(${i},'why')">
+        <i class="fa-solid fa-lightbulb"></i><span>为何摘抄</span>
+      </button>
+    </div>
+  </div>`;
+}
+
+// ── 展开/收起分析 ─────────────────────────────────────────
+function toggleAna(i, tab) {
+  const card = document.getElementById('ac-' + i);
+  const existing = card.querySelector('.ana-body');
+  const btn = card.querySelector(`[data-tab="${tab}"]`);
+  const active = btn.classList.contains('active');
+
+  // 清除所有激活态
+  card.querySelectorAll('.ana-btn').forEach(b => b.classList.remove('active'));
+  if (existing) existing.remove();
+  if (active) return; // 点同一个 → 收起
+
+  btn.classList.add('active');
+  const list = allArticles.filter(a => a.date === currentDate &&
+    (currentTab === '全部' || a.cat === currentTab));
+  const a = list[i];
+  const ana = a.analysis || {};
+
+  let bodyHtml = '';
+  if (tab === 'para') {
+    bodyHtml = `<div class="ana-label"><i class="fa-solid fa-layer-group"></i> 段落结构分析</div>
+      <div class="ana-text">${ana.para || '暂无分析'}</div>`;
+  } else if (tab === 'skill') {
+    const skills = (ana.skills || []);
+    bodyHtml = `<div class="ana-label"><i class="fa-solid fa-pen-nib"></i> 写作技巧</div>
+      ${skills.length ? skills.map(s => `<div class="skill-item">${s}</div>`).join('') : '<div class="ana-text">暂无分析</div>'}`;
+  } else if (tab === 'why') {
+    bodyHtml = `<div class="ana-label"><i class="fa-solid fa-lightbulb"></i> 为何值得摘抄</div>
+      <div class="ana-text">${ana.why || '暂无分析'}</div>`;
+  }
+
+  const div = document.createElement('div');
+  div.className = 'ana-body';
+  div.innerHTML = bodyHtml;
+  card.appendChild(div);
+}
+
+loadData();
+</script>
+</body>
+</html>

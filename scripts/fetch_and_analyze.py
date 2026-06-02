@@ -5,7 +5,7 @@ import datetime
 import requests
 from bs4 import BeautifulSoup
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATA_FILE = "data/articles.json"
 TODAY = datetime.date.today().isoformat()
 
@@ -26,7 +26,7 @@ def classify(title, text):
         return "国家大事"
     return "社会评论"
 
-# ─── 抓取人民日报评论板块 ────────────────────────────────────
+# ─── 抓取人民日报 ────────────────────────────────────────────
 def fetch_rmrb_pinglun():
     articles = []
     urls = [
@@ -76,7 +76,7 @@ def fetch_rmrb_pinglun():
             print(f"[WARN] {source} 抓取失败: {e}")
     return articles
 
-# ─── 抓取山西组工网笔杆子 ────────────────────────────────────
+# ─── 抓取山西组工网 ──────────────────────────────────────────
 def fetch_sxzg():
     articles = []
     url = "http://sxdygbjy.gov.cn/bgz/index.html"
@@ -104,7 +104,8 @@ def fetch_sxzg():
                 pr = requests.get(link, headers=HEADERS, timeout=15)
                 pr.encoding = "utf-8"
                 ps = BeautifulSoup(pr.text, "html.parser")
-                body = ps.select_one(".article-content") or ps.select_one(".content") or ps.select_one("article") or ps.select_one(".TRS_Editor")
+                body = (ps.select_one(".article-content") or ps.select_one(".content")
+                        or ps.select_one("article") or ps.select_one(".TRS_Editor"))
                 content = body.get_text(separator="\n", strip=True) if body else ""
                 if len(content) < 80:
                     continue
@@ -123,11 +124,13 @@ def fetch_sxzg():
         print(f"[WARN] 山西组工网抓取失败: {e}")
     return articles
 
-# ─── Claude API 分析 ─────────────────────────────────────────
+# ─── Gemini API 分析 ─────────────────────────────────────────
 def analyze(article):
-    if not ANTHROPIC_API_KEY:
+    if not GEMINI_API_KEY:
+        print("[WARN] 未设置 GEMINI_API_KEY，跳过AI分析")
         return None
-    prompt = f"""你是申论/公文写作备考辅导老师。请分析以下文章，严格只输出JSON，不要任何多余内容。
+
+    prompt = f"""你是申论/公文写作备考辅导老师。请分析以下文章，严格只输出JSON，不要任何多余内容，不要markdown代码块。
 
 标题：{article['title']}
 来源：{article['source']}
@@ -143,26 +146,24 @@ def analyze(article):
   "skills": ["写作技巧1及文中体现","写作技巧2及文中体现","写作技巧3及文中体现"],
   "why": "从申论/公文写作角度说明摘抄价值，可用于哪类题型场景（100字左右）"
 }}"""
+
+    api_url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
+    }
+
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1000,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        text = r.json()["content"][0]["text"]
+        r = requests.post(api_url, json=payload, timeout=60)
+        r.raise_for_status()
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
         clean = text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean)
     except Exception as e:
-        print(f"[WARN] AI分析失败 {article['title']}: {e}")
+        print(f"[WARN] Gemini分析失败 '{article['title']}': {e}")
         return None
 
 # ─── 主流程 ──────────────────────────────────────────────────
@@ -192,20 +193,19 @@ def main():
         result = analyze(article)
         if result:
             article["keywords"] = result.get("keywords", [])
-            article["excerpt"] = result.get("excerpt", "")
+            article["excerpt"]  = result.get("excerpt", "")
             article["analysis"] = {
-                "para": result.get("para", ""),
+                "para":   result.get("para", ""),
                 "skills": result.get("skills", []),
-                "why": result.get("why", ""),
+                "why":    result.get("why", ""),
             }
         else:
             article["keywords"] = []
-            article["excerpt"] = article["content"][:60] + "..."
+            article["excerpt"]  = article["content"][:60] + "..."
             article["analysis"] = {"para": "", "skills": [], "why": ""}
         time.sleep(2)
 
     all_articles = new_articles + existing
-    # 只保留最近60天
     cutoff = (datetime.date.today() - datetime.timedelta(days=60)).isoformat()
     all_articles = [a for a in all_articles if a.get("date", "") >= cutoff]
 

@@ -25,7 +25,7 @@ jobs:
 
       - name: 运行抓取与分析脚本
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scripts/fetch_and_analyze.py
 
       - name: 提交更新数据

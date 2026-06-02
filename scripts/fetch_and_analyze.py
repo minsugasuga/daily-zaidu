@@ -3,7 +3,11 @@ import json
 import time
 import datetime
 import requests
+import urllib3
 from bs4 import BeautifulSoup
+
+# 关闭 SSL 警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATA_FILE = "data/articles.json"
@@ -26,38 +30,48 @@ def classify(title, text):
         return "国家大事"
     return "社会评论"
 
+# ─── 通用抓取函数 ────────────────────────────────────────────
+def safe_get(url, encoding="utf-8"):
+    r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
+    r.encoding = encoding
+    return r
+
 # ─── 抓取人民日报 ────────────────────────────────────────────
-def fetch_rmrb_pinglun():
+def fetch_rmrb():
     articles = []
-    urls = [
-        ("https://opinion.people.com.cn/GB/8213/index.html", "人民日报·评论"),
-        ("https://culture.people.com.cn/GB/22219/index.html", "人民日报·文化"),
+    sources = [
+        ("https://opinion.people.com.cn/GB/8213/index.html", "gbk", "人民日报·评论"),
+        ("https://culture.people.com.cn/GB/22219/index.html", "gbk", "人民日报·文化"),
     ]
-    for url, source in urls:
+    for url, enc, source in sources:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            r.encoding = "gbk"
+            r = safe_get(url, enc)
             soup = BeautifulSoup(r.text, "html.parser")
+            base = "/".join(url.split("/")[:3])
             links = []
             for a in soup.select("a[href]"):
                 href = a["href"]
                 text = a.get_text(strip=True)
-                if len(text) > 8 and ("n" in href or "html" in href):
-                    if href.startswith("http"):
-                        links.append((text, href))
-                    elif href.startswith("/"):
-                        base = "/".join(url.split("/")[:3])
-                        links.append((text, base + href))
+                if len(text) < 8:
+                    continue
+                if href.startswith("http"):
+                    links.append((text, href))
+                elif href.startswith("/"):
+                    links.append((text, base + href))
             seen = set()
-            for title, link in links[:8]:
+            count = 0
+            for title, link in links:
+                if count >= 6:
+                    break
                 if link in seen:
                     continue
                 seen.add(link)
                 try:
-                    pr = requests.get(link, headers=HEADERS, timeout=15)
-                    pr.encoding = "gbk"
+                    pr = safe_get(link, enc)
                     ps = BeautifulSoup(pr.text, "html.parser")
-                    body = ps.select_one(".rm_txt_con") or ps.select_one("#rwb_zw") or ps.select_one(".article")
+                    body = (ps.select_one(".rm_txt_con") or
+                            ps.select_one("#rwb_zw") or
+                            ps.select_one(".article"))
                     content = body.get_text(separator="\n", strip=True) if body else ""
                     if len(content) < 100:
                         continue
@@ -69,11 +83,14 @@ def fetch_rmrb_pinglun():
                         "date": TODAY,
                         "cat": classify(title, content),
                     })
+                    count += 1
                     time.sleep(1)
-                except Exception:
+                except Exception as e:
+                    print(f"  [跳过] {title[:20]}: {e}")
                     continue
+            print(f"  {source}: 获取 {count} 篇")
         except Exception as e:
-            print(f"[WARN] {source} 抓取失败: {e}")
+            print(f"[WARN] {source} 首页抓取失败: {e}")
     return articles
 
 # ─── 抓取山西组工网 ──────────────────────────────────────────
@@ -81,31 +98,36 @@ def fetch_sxzg():
     articles = []
     url = "http://sxdygbjy.gov.cn/bgz/index.html"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.encoding = "utf-8"
+        r = safe_get(url, "utf-8")
         soup = BeautifulSoup(r.text, "html.parser")
         links = []
         for a in soup.select("a[href]"):
             href = a["href"]
             text = a.get_text(strip=True)
-            if len(text) > 6 and ".html" in href:
-                if href.startswith("http"):
-                    links.append((text, href))
-                elif href.startswith("/"):
-                    links.append((text, "http://sxdygbjy.gov.cn" + href))
-                else:
-                    links.append((text, "http://sxdygbjy.gov.cn/bgz/" + href))
+            if len(text) < 6 or ".html" not in href:
+                continue
+            if href.startswith("http"):
+                links.append((text, href))
+            elif href.startswith("/"):
+                links.append((text, "http://sxdygbjy.gov.cn" + href))
+            else:
+                links.append((text, "http://sxdygbjy.gov.cn/bgz/" + href))
+
         seen = set()
-        for title, link in links[:6]:
+        count = 0
+        for title, link in links:
+            if count >= 5:
+                break
             if link in seen:
                 continue
             seen.add(link)
             try:
-                pr = requests.get(link, headers=HEADERS, timeout=15)
-                pr.encoding = "utf-8"
+                pr = safe_get(link, "utf-8")
                 ps = BeautifulSoup(pr.text, "html.parser")
-                body = (ps.select_one(".article-content") or ps.select_one(".content")
-                        or ps.select_one("article") or ps.select_one(".TRS_Editor"))
+                body = (ps.select_one(".article-content") or
+                        ps.select_one(".TRS_Editor") or
+                        ps.select_one(".content") or
+                        ps.select_one("article"))
                 content = body.get_text(separator="\n", strip=True) if body else ""
                 if len(content) < 80:
                     continue
@@ -117,17 +139,20 @@ def fetch_sxzg():
                     "date": TODAY,
                     "cat": "党政文章",
                 })
+                count += 1
                 time.sleep(1)
-            except Exception:
+            except Exception as e:
+                print(f"  [跳过] {title[:20]}: {e}")
                 continue
+        print(f"  山西组工网: 获取 {count} 篇")
     except Exception as e:
-        print(f"[WARN] 山西组工网抓取失败: {e}")
+        print(f"[WARN] 山西组工网首页抓取失败: {e}")
     return articles
 
 # ─── Gemini API 分析 ─────────────────────────────────────────
 def analyze(article):
     if not GEMINI_API_KEY:
-        print("[WARN] 未设置 GEMINI_API_KEY，跳过AI分析")
+        print("  [WARN] 未设置 GEMINI_API_KEY，跳过AI分析")
         return None
 
     prompt = f"""你是申论/公文写作备考辅导老师。请分析以下文章，严格只输出JSON，不要任何多余内容，不要markdown代码块。
@@ -155,15 +180,14 @@ def analyze(article):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
     }
-
     try:
-        r = requests.post(api_url, json=payload, timeout=60)
+        r = requests.post(api_url, json=payload, timeout=60, verify=False)
         r.raise_for_status()
         text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
         clean = text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean)
     except Exception as e:
-        print(f"[WARN] Gemini分析失败 '{article['title']}': {e}")
+        print(f"  [WARN] Gemini分析失败 '{article['title'][:20]}': {e}")
         return None
 
 # ─── 主流程 ──────────────────────────────────────────────────
@@ -178,18 +202,16 @@ def main():
     existing_urls = {a["url"] for a in existing}
 
     print("正在抓取人民日报...")
-    rmrb = fetch_rmrb_pinglun()
-    print(f"  → 获取 {len(rmrb)} 篇")
+    rmrb = fetch_rmrb()
 
     print("正在抓取山西组工网...")
     sxzg = fetch_sxzg()
-    print(f"  → 获取 {len(sxzg)} 篇")
 
     new_articles = [a for a in rmrb + sxzg if a["url"] not in existing_urls]
-    print(f"新文章 {len(new_articles)} 篇，开始AI分析...")
+    print(f"\n新文章 {len(new_articles)} 篇，开始AI分析...")
 
     for i, article in enumerate(new_articles):
-        print(f"  分析 [{i+1}/{len(new_articles)}]: {article['title'][:30]}")
+        print(f"  分析 [{i+1}/{len(new_articles)}]: {article['title'][:25]}")
         result = analyze(article)
         if result:
             article["keywords"] = result.get("keywords", [])
@@ -212,7 +234,7 @@ def main():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(all_articles, f, ensure_ascii=False, indent=2)
 
-    print(f"完成！共保存 {len(all_articles)} 篇文章。")
+    print(f"\n完成！共保存 {len(all_articles)} 篇文章。")
 
 if __name__ == "__main__":
     main()

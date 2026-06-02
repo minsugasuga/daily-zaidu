@@ -11,7 +11,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 DATA_FILE = "data/articles.json"
 TODAY = datetime.date.today().isoformat()
-YEAR = str(datetime.date.today().year)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
@@ -29,168 +28,151 @@ def classify(title, text):
         return "国家大事"
     return "社会评论"
 
-def safe_get(url, encoding="utf-8"):
+def get_page(url, encoding="utf-8"):
+    """抓取页面，强制指定编码"""
     r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
     r.encoding = encoding
-    return r
+    return BeautifulSoup(r.text, "html.parser")
 
-def fetch_article(link, encoding="gbk", source=""):
-    """抓取单篇文章正文和标题"""
-    r = requests.get(link, headers=HEADERS, timeout=15, verify=False)
-    r.encoding = encoding
-    ps = BeautifulSoup(r.text, "html.parser")
+def extract_title(soup):
+    """从页面提取干净标题"""
+    # 优先取 h1
+    for sel in ["h1.title", "h1", ".title", "#title"]:
+        el = soup.select_one(sel)
+        if el:
+            t = el.get_text(strip=True)
+            if 4 < len(t) < 60:
+                return t
+    # 退而取 <title> 标签，去掉网站名后缀
+    t = soup.select_one("title")
+    if t:
+        raw = t.get_text(strip=True)
+        for sep in ["_", "—", "-", "|"]:
+            if sep in raw:
+                raw = raw.split(sep)[0].strip()
+        if 4 < len(raw) < 80:
+            return raw
+    return ""
 
-    # 取标题：优先 h1，其次 title 标签
-    title = ""
-    h1 = ps.select_one("h1")
-    if h1:
-        title = h1.get_text(strip=True)
-    if not title:
-        t_tag = ps.select_one("title")
-        if t_tag:
-            title = t_tag.get_text(strip=True).split("_")[0].strip()
-
-    # 取正文
-    body = (ps.select_one(".rm_txt_con") or
-            ps.select_one("#rwb_zw") or
-            ps.select_one(".article") or
-            ps.select_one(".text"))
-    content = body.get_text(separator="\n", strip=True) if body else ""
-    return title, content
+def extract_body(soup):
+    """提取正文"""
+    for sel in [".rm_txt_con", "#rwb_zw", ".article_box", ".article",
+                ".content", ".TRS_Editor", "article"]:
+        el = soup.select_one(sel)
+        if el:
+            text = el.get_text(separator="\n", strip=True)
+            if len(text) > 100:
+                return text
+    return ""
 
 def fetch_rmrb():
     articles = []
     sources = [
-        ("https://opinion.people.com.cn/GB/8213/index.html", "gbk", "人民日报·评论"),
-        ("https://culture.people.com.cn/GB/22219/index.html", "gbk", "人民日报·文化"),
+        # 评论：用更新的 URL 格式
+        ("https://opinion.people.com.cn/", "gbk", "人民日报·评论"),
+        ("https://culture.people.com.cn/", "gbk", "人民日报·文化"),
     ]
     for index_url, enc, source in sources:
         try:
-            r = safe_get(index_url, enc)
-            soup = BeautifulSoup(r.text, "html.parser")
-            base = "/".join(index_url.split("/")[:3])
+            soup = get_page(index_url, enc)
+            base = index_url.rstrip("/")
 
-            # 只取当年的文章链接，过滤掉旧文章
-            links = []
-            for a in soup.select("a[href]"):
+            # 收集所有文章链接
+            candidates = []
+            for a in soup.find_all("a", href=True):
                 href = a["href"]
                 text = a.get_text(strip=True)
-                if len(text) < 6:
-                    continue
-                # 只要今年的链接
-                if YEAR not in href:
-                    continue
-                if href.startswith("http"):
-                    full = href
-                elif href.startswith("/"):
-                    full = base + href
-                else:
-                    continue
-                links.append((text, full))
+                # 人民网文章 URL 特征：含 /n1/ 或 /n/ 且是 .html
+                if len(text) > 5 and (".html" in href):
+                    if href.startswith("http") and "people.com.cn" in href:
+                        candidates.append((text, href))
+                    elif href.startswith("/n"):
+                        candidates.append((text, "https://" + index_url.split("/")[2] + href))
 
-            # 去重
             seen = set()
-            unique = []
-            for t, l in links:
-                if l not in seen:
-                    seen.add(l)
-                    unique.append((t, l))
-
             count = 0
-            for _, link in unique[:8]:
+            for _, link in candidates:
+                if count >= 6:
+                    break
+                if link in seen:
+                    continue
+                seen.add(link)
                 try:
-                    title, content = fetch_article(link, enc, source)
-                    if not title or len(content) < 100:
+                    detail = get_page(link, enc)
+                    title = extract_title(detail)
+                    body  = extract_body(detail)
+                    if not title or len(body) < 100:
                         continue
                     articles.append({
-                        "title": title,
-                        "source": source,
-                        "url": link,
-                        "content": content[:2000],
-                        "date": TODAY,
-                        "cat": classify(title, content),
+                        "title":   title,
+                        "source":  source,
+                        "url":     link,
+                        "content": body[:2000],
+                        "date":    TODAY,
+                        "cat":     classify(title, body),
                     })
                     count += 1
                     time.sleep(1)
                 except Exception as e:
-                    print(f"  [跳过] {link[-30:]}: {e}")
-                    continue
-
+                    print(f"    [跳过文章] {e}")
             print(f"  {source}: 获取 {count} 篇")
         except Exception as e:
-            print(f"[WARN] {source} 首页失败: {e}")
+            print(f"  [WARN] {source} 首页失败: {e}")
     return articles
 
 def fetch_sxzg():
     articles = []
     url = "http://sxdygbjy.gov.cn/bgz/index.html"
     try:
-        r = safe_get(url, "utf-8")
-        soup = BeautifulSoup(r.text, "html.parser")
-        links = []
-        for a in soup.select("a[href]"):
+        soup = get_page(url, "utf-8")
+        candidates = []
+        for a in soup.find_all("a", href=True):
             href = a["href"]
             text = a.get_text(strip=True)
-            if len(text) < 6 or ".html" not in href:
-                continue
-            if "index" in href:
+            if len(text) < 5 or ".html" not in href:
                 continue
             if href.startswith("http"):
-                links.append((text, href))
+                candidates.append((text, href))
             elif href.startswith("/"):
-                links.append((text, "http://sxdygbjy.gov.cn" + href))
-            else:
-                links.append((text, "http://sxdygbjy.gov.cn/bgz/" + href))
+                candidates.append((text, "http://sxdygbjy.gov.cn" + href))
+            elif not href.startswith("#"):
+                candidates.append((text, "http://sxdygbjy.gov.cn/bgz/" + href))
 
         seen = set()
         count = 0
-        for _, link in [(t, l) for t, l in links if l not in seen and not seen.add(l)][:6]:
+        for _, link in candidates:
+            if count >= 5:
+                break
+            if link in seen:
+                continue
+            seen.add(link)
             try:
-                r2 = safe_get(link, "utf-8")
-                ps = BeautifulSoup(r2.text, "html.parser")
-
-                title = ""
-                h1 = ps.select_one("h1")
-                if h1:
-                    title = h1.get_text(strip=True)
-                if not title:
-                    t_tag = ps.select_one("title")
-                    if t_tag:
-                        title = t_tag.get_text(strip=True).split("_")[0].strip()
-                if not title:
+                detail = get_page(link, "utf-8")
+                title = extract_title(detail)
+                body  = extract_body(detail)
+                if not title or len(body) < 80:
                     continue
-
-                body = (ps.select_one(".article-content") or
-                        ps.select_one(".TRS_Editor") or
-                        ps.select_one(".content") or
-                        ps.select_one("article"))
-                content = body.get_text(separator="\n", strip=True) if body else ""
-                if len(content) < 80:
-                    continue
-
                 articles.append({
-                    "title": title,
-                    "source": "山西组工·笔杆子",
-                    "url": link,
-                    "content": content[:2000],
-                    "date": TODAY,
-                    "cat": "党政文章",
+                    "title":   title,
+                    "source":  "山西组工·笔杆子",
+                    "url":     link,
+                    "content": body[:2000],
+                    "date":    TODAY,
+                    "cat":     "党政文章",
                 })
                 count += 1
                 time.sleep(1)
             except Exception as e:
-                print(f"  [跳过] {e}")
-                continue
+                print(f"    [跳过文章] {e}")
         print(f"  山西组工网: 获取 {count} 篇")
     except Exception as e:
-        print(f"[WARN] 山西组工网失败: {e}")
+        print(f"  [WARN] 山西组工网失败: {e}")
     return articles
 
 def analyze(article):
     if not GEMINI_API_KEY:
         print("  [WARN] GEMINI_API_KEY 未设置")
         return None
-
     prompt = f"""你是申论/公文写作备考辅导老师。请分析以下文章，严格只输出JSON，不要任何多余内容，不要markdown代码块。
 
 标题：{article['title']}
@@ -208,12 +190,10 @@ def analyze(article):
   "why": "从申论/公文写作角度说明摘抄价值，可用于哪类题型场景（100字左右）"
 }}"""
 
-    api_url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}")
     try:
-        r = requests.post(api_url, json={
+        r = requests.post(url, json={
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1000}
         }, timeout=60, verify=False)
@@ -227,13 +207,15 @@ def analyze(article):
 
 def main():
     os.makedirs("data", exist_ok=True)
-    print(f"今日日期: {TODAY}")
     print(f"GEMINI_API_KEY 已设置: {'是' if GEMINI_API_KEY else '否'}")
 
     existing = []
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            existing = json.load(f)
+            try:
+                existing = json.load(f)
+            except Exception:
+                existing = []
     existing_urls = {a["url"] for a in existing}
 
     print("\n正在抓取人民日报...")
@@ -245,7 +227,7 @@ def main():
     print(f"\n新文章 {len(new_articles)} 篇，开始AI分析...")
 
     for i, article in enumerate(new_articles):
-        print(f"  [{i+1}/{len(new_articles)}] {article['title'][:25]}")
+        print(f"  [{i+1}/{len(new_articles)}] {article['title'][:30]}")
         result = analyze(article)
         if result:
             article["keywords"] = result.get("keywords", [])
